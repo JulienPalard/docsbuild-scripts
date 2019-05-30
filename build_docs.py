@@ -63,7 +63,7 @@ LANGUAGES = ["en", "fr", "ja", "ko", "zh-cn", "zh-tw"]
 
 SPHINXOPTS = {
     "ja": [
-        "-D latex_engine=platex",
+        "-D latex_engine=uplatex",
         "-D latex_elements.inputenc=",
         "-D latex_elements.fontenc=",
     ],
