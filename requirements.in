@@ -1,3 +1,4 @@
-sentry-sdk
 jinja2
+pyyaml
+sentry-sdk
 zc.lockfile
