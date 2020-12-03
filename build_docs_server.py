@@ -1,3 +1,4 @@
+import asyncio
 import argparse
 import logging.config
 import os
@@ -58,6 +59,23 @@ async def version(request):
     )
 
 
+async def child_waiter(app):
+    while True:
+        try:
+            status = os.waitid(os.P_ALL, 0, os.WNOHANG | os.WEXITED)
+            logger.debug("Child completed with status %s", str(status))
+        except ChildProcessError:
+            await asyncio.sleep(600)
+
+
+async def start_child_waiter(app):
+    app["child_waiter"] = asyncio.ensure_future(child_waiter(app))
+
+
+async def stop_child_waiter(app):
+    app["child_waiter"].cancel()
+
+
 async def hook(request):
     payload = await request.json()
     if "ref" not in payload or "commits" not in payload:
@@ -109,6 +127,8 @@ def main():
         )
     )
     app = web.Application()
+    app.on_startup.append(start_child_waiter)
+    app.on_cleanup.append(stop_child_waiter)
     app.add_routes(
         [
             web.get("/", version),
