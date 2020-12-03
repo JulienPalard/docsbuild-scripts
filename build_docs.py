@@ -48,6 +48,7 @@ import subprocess
 import sys
 from datetime import datetime
 
+import zc.lockfile
 import jinja2
 
 HERE = Path(__file__).resolve().parent
@@ -181,22 +182,22 @@ def shell_out(cmd, shell=False, logfile=None):
                 log.write(output)
                 log.write("\n\n")
         return output
-    except subprocess.CalledProcessError as e:
+    except subprocess.CalledProcessError as err:
         if sentry_sdk:
             with sentry_sdk.push_scope() as scope:
                 scope.fingerprint = ["{{ default }}", str(cmd)]
-                sentry_sdk.capture_exception(e)
+                sentry_sdk.capture_exception(err)
         if logfile:
             with open(logfile, "a+") as log:
                 log.write("# " + now + "\n")
                 log.write(
                     "# Command {} failed:".format(cmd if shell else shlex.join(cmd))
                 )
-                log.write(e.output)
+                log.write(err.output)
                 log.write("\n\n")
             logging.error("Command failed (see %s at %s)", logfile, now)
         else:
-            logging.error("Command failed with output %r", e.output)
+            logging.error("Command failed with output %r", err.output)
 
 
 def changed_files(left, right):
@@ -382,13 +383,13 @@ def setup_switchers(html_root):
         script = """    <script type="text/javascript" src="{}_static/switchers.js"></script>\n""".format(
             "../" * depth
         )
-        with edit(file) as (i, o):
-            for line in i:
+        with edit(file) as (ifile, ofile):
+            for line in ifile:
                 if line == script:
                     continue
                 if line == "  </body>\n":
-                    o.write(script)
-                o.write(line)
+                    ofile.write(script)
+                ofile.write(line)
 
 
 def build_one(
@@ -732,12 +733,74 @@ def setup_logging(log_directory):
     logging.getLogger().setLevel(logging.DEBUG)
 
 
+def build_and_publish(
+    build_root,
+    www_root,
+    version,
+    language,
+    quick,
+    group,
+    log_directory,
+    skip_cache_invalidation,
+):
+    """Build and publish a Python doc, for a language, and a version.
+
+    Also ensures that a single process is doing it by using a `.lock`
+    file per language / version pair.
+    """
+    try:
+        lock = zc.lockfile.LockFile(
+            os.path.join(
+                HERE,
+                "{version}-{lang}.lock".format(version=version.name, lang=language.tag),
+            )
+        )
+
+        try:
+            venv = build_venv(build_root, version)
+            build_one(
+                version,
+                quick,
+                venv,
+                build_root,
+                group,
+                log_directory,
+                language,
+            )
+            copy_build_to_webroot(
+                build_root,
+                version,
+                language,
+                group,
+                quick,
+                skip_cache_invalidation,
+                www_root,
+            )
+        except Exception as err:
+            logging.exception(
+                "Exception while building %s version %s",
+                language.tag,
+                version.name,
+            )
+            if sentry_sdk:
+                sentry_sdk.capture_exception(err)
+
+    except zc.lockfile.LockError:
+        logging.info(
+            "Skipping build of %s/%s (build already running)",
+            language.tag,
+            version.name,
+        )
+    else:
+        lock.close()
+
+
 def main():
     args = parse_args()
     languages_dict = {language.tag: language for language in LANGUAGES}
     if args.version:
         version_info()
-        exit(0)
+        sys.exit(0)
     if args.log_directory:
         args.log_directory = os.path.abspath(args.log_directory)
     if args.build_root:
@@ -764,34 +827,16 @@ def main():
                     scope.set_tag("version", version.name)
                     scope.set_tag("language", language_tag)
             language = languages_dict[language_tag]
-            try:
-                venv = build_venv(args.build_root, version)
-                build_one(
-                    version,
-                    args.quick,
-                    venv,
-                    args.build_root,
-                    args.group,
-                    args.log_directory,
-                    language,
-                )
-                copy_build_to_webroot(
-                    args.build_root,
-                    version,
-                    language,
-                    args.group,
-                    args.quick,
-                    args.skip_cache_invalidation,
-                    args.www_root,
-                )
-            except Exception as err:
-                logging.exception(
-                    "Exception while building %s version %s",
-                    language_tag,
-                    version.name,
-                )
-                if sentry_sdk:
-                    sentry_sdk.capture_exception(err)
+            build_and_publish(
+                args.build_root,
+                args.www_root,
+                version,
+                language,
+                args.quick,
+                args.group,
+                args.log_directory,
+                args.skip_cache_invalidation,
+            )
     build_sitemap(args.www_root)
     build_robots_txt(args.www_root)
 
