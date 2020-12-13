@@ -154,7 +154,7 @@ def main():
     app.add_routes(
         [
             web.get("/", version),
-            web.post("/hook/github", hook),
+            web.post("/hooks/github", hook),
         ]
     )
     web.run_app(app, path=args.path, port=args.port)
