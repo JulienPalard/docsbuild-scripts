@@ -1,9 +1,26 @@
-import asyncio
+"""Github hook server.
+
+This is a simple HTTP server handling Github Webhooks requests to
+build the doc when needed.
+
+It needs a GH_SECRET environment variable to be able to receive hooks
+on `/hook/github`.
+
+Its logging can be configured by giving a yaml file path to the
+`--logging-config` argument.
+
+By default the loglevel is `DEBUG` on `stderr`, the default config can
+be found in the code so one can bootstrap a different config from it.
+"""
+
+from pathlib import Path
 import argparse
+import asyncio
 import logging.config
 import os
 
 from aiohttp import web
+from gidgethub import sansio
 import yaml
 
 __version__ = "0.0.1"
@@ -77,19 +94,24 @@ async def stop_child_waiter(app):
 
 
 async def hook(request):
-    payload = await request.json()
-    if "ref" not in payload or "commits" not in payload:
-        logger.debug("Received a request withtout `ref` or `commits`, ignoring.")
-        return web.Response()  # Nothing to do
+    body = await request.read()
+    event = sansio.Event.from_http(
+        request.headers, body, secret=os.environ.get("GH_SECRET")
+    )
+    if event.event != "push":
+        logger.debug(
+            "Received a %s event, nothing to do.", event.event
+        )
+        return web.Response()
     touched_files = (
-        set(payload["commits"].get("added", ()))
-        | set(payload["commits"].get("modified", ()))
-        | set(payload["commits"].get("removed", ()))
+        set(event.data["head_commit"]["added"])
+        | set(event.data["head_commit"]["modified"])
+        | set(event.data["head_commit"]["removed"])
     )
     if not any("Doc" in touched_file for touched_file in touched_files):
         logger.debug("No documentation file modified, ignoring.")
         return web.Response()  # Nothing to do
-    branch = payload["ref"].split("/")[-1]
+    branch = event.data["ref"].split("/")[-1]
     logger.debug("Forking a build for branch %s", branch)
     pid = os.fork()
     if pid == 0:
@@ -132,7 +154,7 @@ def main():
     app.add_routes(
         [
             web.get("/", version),
-            web.post("/", hook),
+            web.post("/hook/github", hook),
         ]
     )
     web.run_app(app, path=args.path, port=args.port)
